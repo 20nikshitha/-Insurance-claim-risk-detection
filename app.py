@@ -95,6 +95,51 @@ except Exception as e:
 
     st.stop()
 
+# ============================================================
+# LLM EXPLANATION
+# ============================================================
+
+def generate_llm_explanation(fraud_probability, risk_category, shap_factors):
+
+    client = OpenAI(
+        api_key=st.secrets["OPENAI_API_KEY"]
+    )
+
+    factors_text = "\n".join(
+        [
+            f"{feature}: {value:.4f}"
+            for feature, value in shap_factors
+        ]
+    )
+
+    prompt = f"""
+You are an insurance fraud risk analyst.
+
+Explain this machine-learning prediction in simple,
+professional language.
+
+Fraud probability: {fraud_probability:.4f}
+Risk category: {risk_category}
+
+Important SHAP factors:
+{factors_text}
+
+Explain:
+1. The overall fraud risk.
+2. Which factors increase the risk.
+3. Which factors decrease the risk.
+4. Give a short conclusion.
+
+Do not claim that the customer committed fraud.
+This is only a machine-learning risk assessment.
+"""
+
+    response = client.responses.create(
+        model="gpt-5.6-mini",
+        input=prompt
+    )
+
+    return response.output_text
 
 # ============================================================
 # SHAP EXPLAINER
