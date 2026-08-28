@@ -42,7 +42,7 @@ st.divider()
 
 THRESHOLD = 0.10
 
-MODEL_PATH = "models/insurance_fraud_gradient_boosting.pkl"
+MODEL_PATH = "insurance_fraud_gradient_boosting.pkl"
 
 
 # ============================================================
