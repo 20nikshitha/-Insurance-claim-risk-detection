@@ -226,6 +226,37 @@ with c2:
     )
 
 # -----------------------------------
+# INDIVIDUAL CLAIM
+# -----------------------------------
+
+st.header("🔍 Individual Claim Analysis")
+
+claim_number = st.number_input(
+    "Select claim row",
+    min_value=0,
+    max_value=len(df) - 1,
+    value=0
+)
+
+selected_claim = df.iloc[claim_number]
+
+st.write(f"### Claim Row: {claim_number}")
+
+col1, col2 = st.columns(2)
+
+with col1:
+    st.metric(
+        "Fraud Probability",
+        f"{selected_claim['Fraud Probability']:.2%}"
+    )
+
+with col2:
+    st.metric(
+        "Risk Category",
+        selected_claim["Risk Category"]
+    )
+
+# -----------------------------------
 # CLAIM INFORMATION
 # -----------------------------------
 
@@ -244,7 +275,8 @@ st.subheader("🧠 SHAP Contributing Factors")
 
 try:
 
-    # Select original claim before prediction columns were added
+    # Remove prediction columns before sending
+    # the claim through the original model
     claim_input = df.drop(
         columns=[
             "Fraud Probability",
@@ -254,21 +286,23 @@ try:
         errors="ignore"
     ).iloc[[claim_number]]
 
-    # Transform claim using the same preprocessing pipeline
-    claim_transformed = preprocessor.transform(claim_input)
+    # Apply the same preprocessing used during training
+    claim_transformed = preprocessor.transform(
+        claim_input
+    )
 
     # Calculate SHAP values
     claim_shap_values = explainer.shap_values(
         claim_transformed
     )
 
-    # Get SHAP values for this claim
+    # Handle SHAP output
     if isinstance(claim_shap_values, list):
         claim_values = claim_shap_values[0]
     else:
         claim_values = claim_shap_values[0]
 
-    # Create explanation dataframe
+    # Create dataframe
     claim_explanation = pd.DataFrame({
         "Feature": feature_names,
         "SHAP Value": claim_values
@@ -278,16 +312,19 @@ try:
         np.abs(claim_explanation["SHAP Value"])
     )
 
-    # Top 10 factors
+    # Get top 10 factors
     top_factors = (
         claim_explanation
-        .sort_values("Absolute SHAP", ascending=False)
+        .sort_values(
+            "Absolute SHAP",
+            ascending=False
+        )
         .head(10)
         .sort_values("SHAP Value")
     )
 
-    # Display table
-    st.write("### Top 10 Factors")
+    # Display results
+    st.write("### Top 10 Contributing Factors")
 
     display_table = top_factors[
         ["Feature", "SHAP Value"]
@@ -304,26 +341,28 @@ try:
     )
 
     # -----------------------------------
-    # SHAP BAR CHART
+    # SHAP CHART
     # -----------------------------------
 
     st.write("### Feature Contributions")
 
-    chart_data = top_factors.set_index("Feature")[
-        "SHAP Value"
-    ]
+    chart_data = top_factors.set_index(
+        "Feature"
+    )["SHAP Value"]
 
     st.bar_chart(chart_data)
 
     st.info(
-        "Positive SHAP values increase the model's fraud prediction, "
-        "while negative SHAP values decrease it."
+        "Positive SHAP values increase the model's "
+        "fraud prediction, while negative SHAP values "
+        "decrease it."
     )
 
 except Exception as e:
 
     st.warning(
-        "SHAP explanation could not be generated for this claim."
+        "SHAP explanation could not be generated "
+        "for this claim."
     )
 
     st.write("Error:", e)
