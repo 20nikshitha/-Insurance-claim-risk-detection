@@ -67,7 +67,7 @@ except Exception as e:
 
     st.info(
         "Make sure the file exists at: "
-        "MODELS/insurance_fraud_gradient_boosting.pkl"
+        "models/insurance_fraud_gradient_boosting.pkl"
     )
 
     st.stop()
