@@ -1,9 +1,23 @@
+import os
+from pathlib import Path
+
 import streamlit as st
 import pandas as pd
 import numpy as np
 import joblib
-import shap
-from openai import OpenAI
+
+try:
+    import shap
+    SHAP_AVAILABLE = True
+except Exception:
+    SHAP_AVAILABLE = False
+
+try:
+    from openai import OpenAI
+    OPENAI_AVAILABLE = True
+except Exception:
+    OPENAI_AVAILABLE = False
+
 
 # ============================================================
 # PAGE CONFIGURATION
@@ -15,27 +29,6 @@ st.set_page_config(
     layout="wide"
 )
 
-# ============================================================
-# HEADER
-# ============================================================
-
-st.title("🔍 Insurance Claim Fraud Detection System")
-
-st.markdown("""
-This application uses a **Gradient Boosting machine learning model**
-to estimate insurance claim fraud risk.
-
-The system provides:
-
-- Fraud probability
-- Low / Medium / High risk classification
-- SHAP-based feature explanations
-- Individual claim analysis
-- Scored claim download
-- Investigator-friendly AI explanation
-""")
-
-st.divider()
 
 # ============================================================
 # CONSTANTS
@@ -43,7 +36,56 @@ st.divider()
 
 THRESHOLD = 0.10
 
-MODEL_PATH = "insurance_fraud_gradient_boosting.pkl"
+# The code checks several possible locations so the app is
+# less likely to fail because of the folder name.
+BASE_DIR = Path(__file__).resolve().parent
+
+MODEL_CANDIDATES = [
+    BASE_DIR / "insurance_fraud_gradient_boosting.pkl",
+    BASE_DIR / "MODELS" / "insurance_fraud_gradient_boosting.pkl",
+    BASE_DIR / "models" / "insurance_fraud_gradient_boosting.pkl",
+]
+
+
+# ============================================================
+# HEADER
+# ============================================================
+
+st.title("🔍 Insurance Claim Fraud Detection System")
+
+st.markdown(
+    """
+This application uses a **Gradient Boosting machine-learning model**
+to estimate insurance claim fraud risk.
+
+### Features
+
+- Fraud probability
+- Fraud prediction using a 0.10 threshold
+- Low / Medium / High risk classification
+- Individual claim analysis
+- SHAP-based explanations
+- Investigator summary
+- AI-generated claim explanation
+- Scored claim download
+"""
+)
+
+st.divider()
+
+
+# ============================================================
+# FIND MODEL
+# ============================================================
+
+def find_model_path():
+
+    for path in MODEL_CANDIDATES:
+
+        if path.exists():
+            return path
+
+    return None
 
 
 # ============================================================
@@ -51,24 +93,43 @@ MODEL_PATH = "insurance_fraud_gradient_boosting.pkl"
 # ============================================================
 
 @st.cache_resource
-def load_model():
+def load_model(model_path):
 
-    return joblib.load(MODEL_PATH)
+    return joblib.load(model_path)
+
+
+model_path = find_model_path()
+
+if model_path is None:
+
+    st.error("❌ Trained model file was not found.")
+
+    st.write("The application looked for:")
+
+    for path in MODEL_CANDIDATES:
+        st.code(str(path))
+
+    st.warning(
+        "Put insurance_fraud_gradient_boosting.pkl in the same "
+        "folder as app.py OR inside a MODELS folder."
+    )
+
+    st.stop()
 
 
 try:
 
-    model = load_model()
+    model = load_model(str(model_path))
 
 except Exception as e:
 
     st.error("❌ Could not load the trained model.")
 
-    st.write("Model loading error:", e)
+    st.code(str(e))
 
-    st.info(
-        "Make sure the file exists at: "
-        "models/insurance_fraud_gradient_boosting.pkl"
+    st.warning(
+        "This can happen when the model was created with a "
+        "different scikit-learn version."
     )
 
     st.stop()
@@ -91,126 +152,189 @@ except Exception as e:
         "scikit-learn Pipeline format."
     )
 
+    st.write("Expected pipeline steps:")
+
+    st.code("preprocessor → classifier")
+
+    st.write("Actual model:", model)
+
     st.write("Error:", e)
 
     st.stop()
 
-# ============================================================
-# LLM EXPLANATION
-# ============================================================
-
-def generate_llm_explanation(fraud_probability, risk_category, shap_factors):
-
-    client = OpenAI(
-        api_key=st.secrets["OPENAI_API_KEY"]
-    )
-
-    factors_text = "\n".join(
-        [
-            f"{feature}: {value:.4f}"
-            for feature, value in shap_factors
-        ]
-    )
-
-    prompt = f"""
-You are an insurance fraud risk analyst.
-
-Explain this machine-learning prediction in simple,
-professional language.
-
-Fraud probability: {fraud_probability:.4f}
-Risk category: {risk_category}
-
-Important SHAP factors:
-{factors_text}
-
-Explain:
-1. The overall fraud risk.
-2. Which factors increase the risk.
-3. Which factors decrease the risk.
-4. Give a short conclusion.
-
-Do not claim that the customer committed fraud.
-This is only a machine-learning risk assessment.
-"""
-
-    response = client.responses.create(
-        model="gpt-5.6-mini",
-        input=prompt
-    )
-
-    return response.output_text
 
 # ============================================================
 # SHAP EXPLAINER
 # ============================================================
 
-try:
+explainer = None
+feature_names = None
 
-    explainer = shap.TreeExplainer(
-        gb_classifier
-    )
+if SHAP_AVAILABLE:
 
-    feature_names = (
-        preprocessor
-        .get_feature_names_out()
-    )
+    try:
 
-    shap_available = True
+        explainer = shap.TreeExplainer(gb_classifier)
 
-except Exception as e:
+        try:
 
-    shap_available = False
+            feature_names = (
+                preprocessor.get_feature_names_out()
+            )
 
-    st.warning(
-        "SHAP explanation is currently unavailable."
-    )
+        except Exception:
 
-    st.write("SHAP error:", e)
+            feature_names = None
+
+    except Exception as e:
+
+        SHAP_AVAILABLE = False
+
+        st.warning(
+            "SHAP could not be initialized. "
+            "The prediction system will still work."
+        )
 
 
 # ============================================================
-# SIDEBAR
+# LLM FUNCTION
 # ============================================================
 
-st.sidebar.header("📁 Upload Claims")
+def generate_llm_explanation(
+    fraud_probability,
+    risk_category,
+    prediction,
+    shap_factors
+):
 
-uploaded_file = st.sidebar.file_uploader(
-    "Upload insurance claims CSV",
+    if not OPENAI_AVAILABLE:
+
+        return (
+            "The OpenAI package is not installed. "
+            "Add 'openai' to requirements.txt and redeploy."
+        )
+
+    # Streamlit Secrets
+    api_key = None
+
+    try:
+
+        api_key = st.secrets["OPENAI_API_KEY"]
+
+    except Exception:
+        pass
+
+    # Optional environment variable fallback
+    if not api_key:
+
+        api_key = os.getenv("OPENAI_API_KEY")
+
+    if not api_key:
+
+        return (
+            "OpenAI API key is not configured. "
+            "Add OPENAI_API_KEY to Streamlit Secrets."
+        )
+
+    client = OpenAI(api_key=api_key)
+
+    if shap_factors is None or len(shap_factors) == 0:
+
+        factors_text = "No SHAP factors were available."
+
+    else:
+
+        factor_lines = []
+
+        for _, row in shap_factors.iterrows():
+
+            feature = str(row["Feature"])
+
+            value = float(row["SHAP Value"])
+
+            direction = (
+                "increases"
+                if value > 0
+                else "decreases"
+            )
+
+            factor_lines.append(
+                f"{feature}: SHAP={value:.4f} "
+                f"({direction} fraud-risk score)"
+            )
+
+        factors_text = "\n".join(factor_lines)
+
+    prompt = f"""
+You are an insurance fraud risk analyst.
+
+Explain the machine-learning assessment of an insurance claim
+to a non-technical investigator.
+
+Model prediction:
+{prediction}
+
+Fraud probability:
+{fraud_probability:.4f}
+
+Risk category:
+{risk_category}
+
+Top SHAP factors:
+{factors_text}
+
+Write a concise professional explanation.
+
+Your explanation must:
+1. State the overall risk level.
+2. Explain the most important factors increasing risk.
+3. Explain the most important factors decreasing risk.
+4. Give a practical investigator-oriented conclusion.
+
+Important safety rules:
+- Do NOT say that the customer committed fraud.
+- Do NOT treat SHAP values as proof of fraud.
+- Do NOT claim that a feature causes fraud.
+- Clearly describe this as a machine-learning risk assessment.
+- Keep the explanation to approximately 120-180 words.
+"""
+
+    try:
+
+        response = client.responses.create(
+            model="gpt-5.6-luna",
+            input=prompt
+        )
+
+        return response.output_text
+
+    except Exception as e:
+
+        return f"Unable to generate AI explanation: {e}"
+
+
+# ============================================================
+# DATA UPLOAD
+# ============================================================
+
+st.header("📂 Upload Insurance Claims")
+
+uploaded_file = st.file_uploader(
+    "Upload your insurance claims CSV file",
     type=["csv"]
 )
-
-st.sidebar.markdown("---")
-
-st.sidebar.write(
-    f"**Fraud threshold:** {THRESHOLD}"
-)
-
-st.sidebar.write(
-    "**Model:** Gradient Boosting"
-)
-
-st.sidebar.write(
-    "**ROC-AUC:** 0.8445"
-)
-
-
-# ============================================================
-# IF NO FILE UPLOADED
-# ============================================================
 
 if uploaded_file is None:
 
     st.info(
-        "👈 Upload your insurance claims CSV file "
-        "from the sidebar to begin."
+        "Upload the CSV dataset to start fraud-risk prediction."
     )
 
     st.stop()
 
 
 # ============================================================
-# READ CSV
+# READ DATA
 # ============================================================
 
 try:
@@ -226,40 +350,19 @@ except Exception as e:
     st.stop()
 
 
+st.success(
+    f"Successfully loaded {len(df):,} claims."
+)
+
+
 # ============================================================
-# DATA OVERVIEW
+# DATA PREVIEW
 # ============================================================
 
-st.header("📊 Data Overview")
-
-col1, col2, col3 = st.columns(3)
-
-with col1:
-
-    st.metric(
-        "Number of Claims",
-        len(df)
-    )
-
-with col2:
-
-    st.metric(
-        "Number of Features",
-        len(df.columns)
-    )
-
-with col3:
-
-    st.metric(
-        "Missing Values",
-        int(df.isnull().sum().sum())
-    )
-
-
-st.subheader("Preview")
+st.header("📊 Dataset Preview")
 
 st.dataframe(
-    df.head(100),
+    df.head(10),
     use_container_width=True
 )
 
@@ -270,23 +373,41 @@ st.dataframe(
 
 st.header("🔎 Data Quality")
 
-quality_df = pd.DataFrame({
-
-    "Feature": df.columns,
-
-    "Missing Values": (
-        df.isnull().sum().values
-    ),
-
-    "Data Type": (
-        df.dtypes.astype(str).values
-    )
-
-})
+quality_df = pd.DataFrame(
+    {
+        "Feature": df.columns,
+        "Missing Values": df.isnull().sum().values,
+        "Data Type": df.dtypes.astype(str).values
+    }
+)
 
 st.dataframe(
     quality_df,
     use_container_width=True
+)
+
+
+# ============================================================
+# REMOVE TARGET COLUMN IF PRESENT
+# ============================================================
+
+prediction_input = df.copy()
+
+if "FraudFlag" in prediction_input.columns:
+
+    prediction_input = prediction_input.drop(
+        columns=["FraudFlag"]
+    )
+
+
+# Remove previously generated application columns
+prediction_input = prediction_input.drop(
+    columns=[
+        "Fraud Probability",
+        "Fraud Prediction",
+        "Risk Category"
+    ],
+    errors="ignore"
 )
 
 
@@ -298,22 +419,22 @@ st.header("🚨 Fraud Risk Prediction")
 
 try:
 
-    probabilities = (
-        model.predict_proba(df)[:, 1]
-    )
+    probabilities = model.predict_proba(
+        prediction_input
+    )[:, 1]
 
 except Exception as e:
 
-    st.error(
-        "❌ Prediction failed."
-    )
+    st.error("❌ Prediction failed.")
 
     st.error(
-        "The uploaded CSV does not match the "
-        "input features expected by the trained model."
+        "The uploaded CSV does not match the input "
+        "features expected by the trained model."
     )
 
-    st.write("Prediction error:", e)
+    st.write("Prediction error:")
+
+    st.code(str(e))
 
     st.stop()
 
@@ -360,10 +481,7 @@ df["Risk Category"] = [
 
 st.subheader("Risk Summary")
 
-risk_counts = (
-    df["Risk Category"]
-    .value_counts()
-)
+risk_counts = df["Risk Category"].value_counts()
 
 col1, col2, col3 = st.columns(3)
 
@@ -371,30 +489,21 @@ with col1:
 
     st.metric(
         "🟢 Low Risk",
-        risk_counts.get(
-            "Low Risk",
-            0
-        )
+        risk_counts.get("Low Risk", 0)
     )
 
 with col2:
 
     st.metric(
         "🟡 Medium Risk",
-        risk_counts.get(
-            "Medium Risk",
-            0
-        )
+        risk_counts.get("Medium Risk", 0)
     )
 
 with col3:
 
     st.metric(
         "🔴 High Risk",
-        risk_counts.get(
-            "High Risk",
-            0
-        )
+        risk_counts.get("High Risk", 0)
     )
 
 
@@ -427,7 +536,7 @@ else:
 
 
 st.write(
-    f"Showing **{len(filtered_df)} claims**"
+    f"Showing **{len(filtered_df):,} claims**"
 )
 
 st.dataframe(
@@ -445,7 +554,7 @@ st.header("🔍 Individual Claim Analysis")
 claim_number = st.number_input(
     "Select claim row",
     min_value=0,
-    max_value=len(df) - 1,
+    max_value=max(len(df) - 1, 0),
     value=0,
     step=1
 )
@@ -520,93 +629,154 @@ st.dataframe(
 
 st.subheader("🧠 SHAP Explanation")
 
-if shap_available:
+top_factors = pd.DataFrame()
+
+if SHAP_AVAILABLE and explainer is not None:
 
     try:
 
-        # Remove application-generated columns
         claim_input = (
-            df.drop(
-                columns=[
-                    "Fraud Probability",
-                    "Fraud Prediction",
-                    "Risk Category"
-                ],
-                errors="ignore"
-            )
+            prediction_input
             .iloc[[claim_number]]
         )
 
-        # Apply original preprocessing
         claim_transformed = (
             preprocessor.transform(
                 claim_input
             )
         )
 
-        # Calculate SHAP values
-        claim_shap_values = (
+        # Convert sparse matrix if required
+        if hasattr(
+            claim_transformed,
+            "toarray"
+        ):
+
+            claim_transformed = (
+                claim_transformed.toarray()
+            )
+
+        claim_transformed = np.asarray(
+            claim_transformed
+        )
+
+        # Get SHAP values
+        raw_shap_values = (
             explainer.shap_values(
                 claim_transformed
             )
         )
 
-        # Handle different SHAP output formats
+        # Handle different SHAP formats
         if isinstance(
-            claim_shap_values,
+            raw_shap_values,
             list
         ):
 
-            claim_values = (
-                claim_shap_values[0]
-            )
+            # For binary classification, class 1
+            # is the fraud class.
+            if len(raw_shap_values) > 1:
+
+                claim_values = np.asarray(
+                    raw_shap_values[1]
+                )[0]
+
+            else:
+
+                claim_values = np.asarray(
+                    raw_shap_values[0]
+                )[0]
 
         else:
 
-            claim_values = (
-                claim_shap_values[0]
+            raw_shap_values = np.asarray(
+                raw_shap_values
             )
+
+            if raw_shap_values.ndim == 3:
+
+                # Possible shape:
+                # samples x features x classes
+
+                if raw_shap_values.shape[-1] > 1:
+
+                    claim_values = (
+                        raw_shap_values[0, :, 1]
+                    )
+
+                else:
+
+                    claim_values = (
+                        raw_shap_values[0, :, 0]
+                    )
+
+            elif raw_shap_values.ndim == 2:
+
+                claim_values = (
+                    raw_shap_values[0]
+                )
+
+            else:
+
+                claim_values = (
+                    raw_shap_values.flatten()
+                )
 
         claim_values = np.asarray(
             claim_values
         ).flatten()
 
-        # Create SHAP dataframe
-        claim_explanation = pd.DataFrame({
+        # Get feature names
+        if feature_names is None:
 
-            "Feature": feature_names,
+            feature_names = np.array(
+                [
+                    f"Feature_{i}"
+                    for i in range(
+                        len(claim_values)
+                    )
+                ]
+            )
 
-            "SHAP Value": claim_values
+        feature_names = np.asarray(
+            feature_names
+        ).flatten()
 
-        })
+        # Make sure lengths match
+        n_features = min(
+            len(feature_names),
+            len(claim_values)
+        )
+
+        claim_explanation = pd.DataFrame(
+            {
+                "Feature":
+                    feature_names[:n_features],
+
+                "SHAP Value":
+                    claim_values[:n_features]
+            }
+        )
 
         claim_explanation[
             "Absolute SHAP"
         ] = np.abs(
-            claim_explanation[
-                "SHAP Value"
-            ]
+            claim_explanation["SHAP Value"]
         )
 
         # Top 10 factors
         top_factors = (
-
             claim_explanation
-
             .sort_values(
                 "Absolute SHAP",
                 ascending=False
             )
-
             .head(10)
-
             .sort_values(
                 "SHAP Value"
             )
-
         )
 
-        # Display table
         st.write(
             "### Top 10 Contributing Factors"
         )
@@ -629,7 +799,6 @@ if shap_available:
             use_container_width=True
         )
 
-        # SHAP chart
         st.write(
             "### Feature Contributions"
         )
@@ -641,15 +810,12 @@ if shap_available:
             ]
         )
 
-        st.bar_chart(
-            chart_data
-        )
+        st.bar_chart(chart_data)
 
         st.info(
             "Positive SHAP values push the prediction "
-            "toward higher fraud risk. Negative SHAP "
-            "values push the prediction toward lower "
-            "fraud risk."
+            "toward higher fraud risk. Negative SHAP values "
+            "push the prediction toward lower fraud risk."
         )
 
     except Exception as e:
@@ -659,10 +825,70 @@ if shap_available:
             "for this claim."
         )
 
-        st.write(
-            "SHAP Error:",
-            e
+        st.code(str(e))
+
+else:
+
+    st.info(
+        "SHAP is not available. Install the SHAP package "
+        "to enable individual claim explanations."
+    )
+
+
+# ============================================================
+# AI-GENERATED EXPLANATION
+# ============================================================
+
+st.subheader("🤖 AI-Generated Risk Explanation")
+
+st.info(
+    "The Gradient Boosting model makes the fraud-risk "
+    "prediction. SHAP explains the model behavior. "
+    "The AI only converts these results into "
+    "investigator-friendly language."
+)
+
+
+if len(top_factors) > 0:
+
+    if st.button(
+        "🤖 Generate AI Explanation",
+        type="primary"
+    ):
+
+        with st.spinner(
+            "Generating investigator-friendly explanation..."
+        ):
+
+            explanation = (
+                generate_llm_explanation(
+                    fraud_probability=float(
+                        selected_claim[
+                            "Fraud Probability"
+                        ]
+                    ),
+                    risk_category=str(
+                        selected_claim[
+                            "Risk Category"
+                        ]
+                    ),
+                    prediction=prediction_text,
+                    shap_factors=top_factors
+                )
+            )
+
+        st.success(
+            "AI explanation generated successfully!"
         )
+
+        st.markdown(explanation)
+
+else:
+
+    st.warning(
+        "Generate the SHAP explanation first. "
+        "The AI explanation requires SHAP factors."
+    )
 
 
 # ============================================================
@@ -675,9 +901,9 @@ probability = float(
     selected_claim["Fraud Probability"]
 )
 
-risk = selected_claim[
-    "Risk Category"
-]
+risk = str(
+    selected_claim["Risk Category"]
+)
 
 prediction = (
     "Fraud"
@@ -720,117 +946,6 @@ st.write(
 
 
 # ============================================================
-# GENERATIVE AI EXPLANATION
-# ============================================================
-
-st.subheader("🤖 AI Investigator Explanation")
-
-st.info(
-    "The AI explanation is an interpretation layer. "
-    "The Gradient Boosting model makes the fraud-risk "
-    "prediction; the AI does not make the fraud decision."
-)
-
-
-# Prepare top factors for the explanation
-if shap_available and "top_factors" in locals():
-
-    positive_factors = (
-        top_factors[
-            top_factors["SHAP Value"] > 0
-        ]
-        .sort_values(
-            "SHAP Value",
-            ascending=False
-        )
-        .head(5)
-    )
-
-    negative_factors = (
-        top_factors[
-            top_factors["SHAP Value"] < 0
-        ]
-        .sort_values(
-            "SHAP Value"
-        )
-        .head(5)
-    )
-
-else:
-
-    positive_factors = pd.DataFrame()
-
-    negative_factors = pd.DataFrame()
-
-
-st.write("### Investigator-Friendly Explanation")
-
-if probability >= 0.30:
-
-    st.warning(
-        f"This claim has been classified as **High Risk** "
-        f"with a model-estimated fraud probability of "
-        f"**{probability:.2%}**. "
-        f"The claim should be prioritized for further "
-        f"manual investigation."
-    )
-
-elif probability >= 0.10:
-
-    st.warning(
-        f"This claim has been classified as **Medium Risk** "
-        f"with a model-estimated fraud probability of "
-        f"**{probability:.2%}**. "
-        f"Additional verification may be appropriate."
-    )
-
-else:
-
-    st.success(
-        f"This claim has been classified as **Low Risk** "
-        f"with a model-estimated fraud probability of "
-        f"**{probability:.2%}**. "
-        f"The model does not indicate immediate fraud risk."
-    )
-
-
-# Positive factors
-if len(positive_factors) > 0:
-
-    st.write(
-        "**Factors increasing the model's fraud-risk score:**"
-    )
-
-    for _, row in positive_factors.iterrows():
-
-        st.write(
-            f"- {row['Feature']} "
-            f"(SHAP: +{row['SHAP Value']:.4f})"
-        )
-
-
-# Negative factors
-if len(negative_factors) > 0:
-
-    st.write(
-        "**Factors decreasing the model's fraud-risk score:**"
-    )
-
-    for _, row in negative_factors.iterrows():
-
-        st.write(
-            f"- {row['Feature']} "
-            f"(SHAP: {row['SHAP Value']:.4f})"
-        )
-
-
-st.caption(
-    "Note: SHAP factors describe model behavior and "
-    "should not be interpreted as proof of fraud or causation."
-)
-
-
-# ============================================================
 # DOWNLOAD
 # ============================================================
 
@@ -841,15 +956,10 @@ csv_output = df.to_csv(
 )
 
 st.download_button(
-
     label="📥 Download Scored Claims CSV",
-
     data=csv_output,
-
     file_name="scored_insurance_claims.csv",
-
     mime="text/csv"
-
 )
 
 
@@ -861,47 +971,6 @@ st.divider()
 
 st.caption(
     "Insurance Fraud Detection | "
-    "Gradient Boosting + SHAP Explainability"
+    "Gradient Boosting + SHAP + LLM Explainability"
 )
 
-def generate_llm_explanation(fraud_probability, risk_category, shap_factors):
-
-    client = OpenAI(
-        api_key=st.secrets["OPENAI_API_KEY"]
-    )
-
-    factors_text = "\n".join(
-        [
-            f"{feature}: {value:.4f}"
-            for feature, value in shap_factors
-        ]
-    )
-
-    prompt = f"""
-You are an insurance fraud risk analyst.
-
-Explain the following machine-learning prediction in simple,
-professional language.
-
-Fraud probability: {fraud_probability:.4f}
-Risk category: {risk_category}
-
-Important SHAP factors:
-{factors_text}
-
-Explain:
-1. The overall fraud risk.
-2. Which factors increase the risk.
-3. Which factors decrease the risk.
-4. Give a short overall conclusion.
-
-Do not claim that the customer committed fraud.
-This is only a machine-learning risk assessment.
-"""
-
-    response = client.responses.create(
-        model="gpt-5.6-mini",
-        input=prompt
-    )
-
-    return response.output_text
