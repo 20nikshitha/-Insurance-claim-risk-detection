@@ -1,3 +1,6 @@
+import joblib 
+import shap
+import numpy as np
 import streamlit as st
 import pandas as pd
 import joblib
@@ -33,7 +36,12 @@ def load_model():
     )
 
 model = load_model()
+gb_classifier = model.named_steps["classifier"]
+preprocessor = model.named_steps["preprocessor"]
 
+explainer = shap.TreeExplainer(gb_classifier)
+
+feature_names = preprocessor.get_feature_names_out()
 # -----------------------------------
 # SIDEBAR
 # -----------------------------------
@@ -187,74 +195,135 @@ if uploaded_file is not None:
         )
 
         # -----------------------------------
-        # INDIVIDUAL CLAIM
-        # -----------------------------------
+# INDIVIDUAL CLAIM
+# -----------------------------------
 
-        st.header("🔍 Individual Claim Analysis")
+st.header("🔍 Individual Claim Analysis")
 
-        claim_number = st.number_input(
-            "Select claim row",
-            min_value=0,
-            max_value=len(df) - 1,
-            value=0
-        )
+claim_number = st.number_input(
+    "Select claim row",
+    min_value=0,
+    max_value=len(df) - 1,
+    value=0
+)
 
-        selected_claim = df.iloc[claim_number]
+selected_claim = df.iloc[claim_number]
 
-        st.write(
-            f"### Claim Row: {claim_number}"
-        )
+st.write(f"### Claim Row: {claim_number}")
 
-        c1, c2 = st.columns(2)
+c1, c2 = st.columns(2)
 
-        with c1:
+with c1:
+    st.metric(
+        "Fraud Probability",
+        f"{selected_claim['Fraud Probability']:.2%}"
+    )
 
-            st.metric(
-                "Fraud Probability",
-                f"{selected_claim['Fraud Probability']:.2%}"
-            )
+with c2:
+    st.metric(
+        "Risk Category",
+        selected_claim["Risk Category"]
+    )
 
-        with c2:
+# -----------------------------------
+# CLAIM INFORMATION
+# -----------------------------------
 
-            st.metric(
-                "Risk Category",
-                selected_claim["Risk Category"]
-            )
+st.subheader("Claim Information")
 
-        st.subheader("Claim Information")
+st.dataframe(
+    selected_claim.to_frame("Value"),
+    use_container_width=True
+)
 
-        st.dataframe(
-            selected_claim.to_frame("Value"),
-            use_container_width=True
-        )
+# -----------------------------------
+# SHAP EXPLANATION
+# -----------------------------------
 
-        # -----------------------------------
-        # DOWNLOAD
-        # -----------------------------------
+st.subheader("🧠 SHAP Contributing Factors")
 
-        st.header("⬇️ Download Results")
+try:
 
-        csv = df.to_csv(index=False)
+    # Select original claim before prediction columns were added
+    claim_input = df.drop(
+        columns=[
+            "Fraud Probability",
+            "Fraud Prediction",
+            "Risk Category"
+        ],
+        errors="ignore"
+    ).iloc[[claim_number]]
 
-        st.download_button(
-            label="Download Scored Claims CSV",
-            data=csv,
-            file_name="scored_insurance_claims.csv",
-            mime="text/csv"
-        )
+    # Transform claim using the same preprocessing pipeline
+    claim_transformed = preprocessor.transform(claim_input)
 
-    except Exception as e:
+    # Calculate SHAP values
+    claim_shap_values = explainer.shap_values(
+        claim_transformed
+    )
 
-        st.error(
-            "The uploaded CSV does not match the format expected "
-            "by the trained model."
-        )
+    # Get SHAP values for this claim
+    if isinstance(claim_shap_values, list):
+        claim_values = claim_shap_values[0]
+    else:
+        claim_values = claim_shap_values[0]
 
-        st.write("Error:", e)
+    # Create explanation dataframe
+    claim_explanation = pd.DataFrame({
+        "Feature": feature_names,
+        "SHAP Value": claim_values
+    })
 
-else:
+    claim_explanation["Absolute SHAP"] = (
+        np.abs(claim_explanation["SHAP Value"])
+    )
+
+    # Top 10 factors
+    top_factors = (
+        claim_explanation
+        .sort_values("Absolute SHAP", ascending=False)
+        .head(10)
+        .sort_values("SHAP Value")
+    )
+
+    # Display table
+    st.write("### Top 10 Factors")
+
+    display_table = top_factors[
+        ["Feature", "SHAP Value"]
+    ].copy()
+
+    display_table["SHAP Value"] = (
+        display_table["SHAP Value"]
+        .round(4)
+    )
+
+    st.dataframe(
+        display_table,
+        use_container_width=True
+    )
+
+    # -----------------------------------
+    # SHAP BAR CHART
+    # -----------------------------------
+
+    st.write("### Feature Contributions")
+
+    chart_data = top_factors.set_index("Feature")[
+        "SHAP Value"
+    ]
+
+    st.bar_chart(chart_data)
 
     st.info(
-        "Please upload an insurance claims CSV file using "
-        "the sidebar."
+        "Positive SHAP values increase the model's fraud prediction, "
+        "while negative SHAP values decrease it."
     )
+
+except Exception as e:
+
+    st.warning(
+        "SHAP explanation could not be generated for this claim."
+    )
+
+    st.write("Error:", e)
