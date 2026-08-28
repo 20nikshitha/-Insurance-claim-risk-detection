@@ -1,5 +1,3 @@
-# -Insurance-claim-risk-detection
-
 # Automobile Insurance Fraud Detection using Machine Learning
 
 ## 📌 Project Overview
