@@ -9,6 +9,17 @@ The main objective is to identify fraudulent claims from historical insurance da
 Since fraudulent claims represent only a small portion of the dataset, the project focuses on metrics such as Recall, Precision, F1 Score, and ROC-AUC rather than relying only on accuracy.
 
 ---
+## ⭐ Key Results
+
+The Gradient Boosting model was selected as the final model.
+
+- ROC-AUC: **84.45%**
+- Recall: **72.97%**
+- F1 Score: **28.18%**
+- Precision: **17.46%**
+- Classification Threshold: **0.10**
+
+The model is designed to flag potentially fraudulent claims for further investigation rather than automatically rejecting claims.
 
 ## 📊 Dataset
 
