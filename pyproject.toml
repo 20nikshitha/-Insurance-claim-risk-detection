@@ -1,0 +1,13 @@
+[project]
+name = "insurance-fraud-detection"
+version = "1.0.0"
+requires-python = "==3.11.*"
+dependencies = [
+    "streamlit",
+    "pandas",
+    "numpy",
+    "scikit-learn==1.6.1",
+    "joblib",
+    "shap==0.52.0",
+    "matplotlib"
+]
